@@ -1,0 +1,8 @@
+{
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "dotenv": "^16.5.0",
+    "ora": "^8.2.0"
+  }
+}
