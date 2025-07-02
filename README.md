@@ -26,7 +26,7 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 │   ├── formatter.js    # JSON color formatting for CLI
 │   └── logger.js       # Colorized logging and waiting messages
 ├── wsClient.js         # WebSocket connection logic
-├── main.js             # Entry point (AKA file you run to fire it up)
+├── pagingMrMorrow.js             # Entry point (AKA file you run to fire it up)
 ├── .env.example        # Example environment variable file
 ├── .gitignore          # Git ignored files
 ├── LICENSE             # License info
@@ -79,7 +79,7 @@ Install dependencies:
 Fire up the WebSocket Client:
 
 ```css
-node main.js
+node pagingMrMorrow.js
 ```
 
 You should see output like:
