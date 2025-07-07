@@ -1,4 +1,4 @@
-# Lens API Node.js Client
+# Paging Mr Morrow
 
 A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subscribes to real-time telemetry streams, and logs colorized data to the CLI.
 
