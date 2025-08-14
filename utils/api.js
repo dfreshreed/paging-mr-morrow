@@ -1,89 +1,148 @@
-import { logInfo, prettierLines } from './logger.js';
+import { logInfo, prettierLines, logError } from './logger.js';
 import { config } from './config.js';
 import axios from 'axios';
 
-export async function fetchRoomIds(accessToken, options = {}) {
+export async function fetchRooms(accessToken, options = {}) {
   if (!accessToken)
     throw new Error('No access token provided. Cannot fetchRoomIds');
 
-  let { cursor = 'endCursor', paging = 'NEXT_PAGE', limit = 15 } = options;
-  const query = /* GQL */ `
-      query getRoomData($params: RoomConnectionParams) {
-        tenants {
-          roomData(params: $params) {
-            total
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            edges {
-              node {
-                name
-                id
-                site {
+  let allRooms = [];
+  let hasNextPage = true;
+  let { cursor = null, paging = 'NEXT_PAGE', limit = 15 } = options;
+
+  try {
+    const query = /* GQL */ `
+        query getRoomData($params: RoomConnectionParams) {
+          tenants {
+            roomData(params: $params) {
+              total
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              edges {
+                node {
                   name
                   id
+                  site {
+                    name
+                    id
+                  }
                 }
               }
             }
           }
         }
-      }
-    `;
+      `;
 
-  let allRoomIds = [];
-  let hasNextPage = true;
-  logInfo(
-    prettierLines([
-      ['▶️ HTTP endpoint is: ', 'white'],
-      [config.httpEp.toString(), 'yellow'],
-    ])
-  );
+    logInfo(
+      prettierLines([
+        ['🌐 Batch-retrieving room IDs from Lens GQL endpoint: '],
+        [config.httpEp.toString(), 'yellow'],
+      ])
+    );
 
-  while (hasNextPage) {
-    const response = await axios.post(
-      config.httpEp,
-      {
-        query,
-        variables: {
-          params: {
-            limit: limit,
-            cursor: cursor,
-            paging: paging,
+    while (hasNextPage) {
+      const response = await axios.post(
+        config.httpEp,
+        {
+          query,
+          variables: {
+            params: {
+              limit: limit,
+              cursor: cursor,
+              paging: paging,
+            },
           },
         },
-      },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const data = response.data?.data?.tenants?.[0]?.roomData;
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const data = response.data?.data?.tenants?.[0]?.roomData;
 
-    if (!data) throw new Error('Unexpected GraphQL response structure');
+      if (!data) throw new Error('Unexpected GraphQL response structure');
 
-    const roomIds = data.edges.map((edge) => edge.node.id);
-    logInfo(
-      prettierLines([
-        ['RoomIds: ', 'white'],
-        [roomIds.toString(), 'yellow'],
-      ])
-    );
-    allRoomIds.push(...roomIds);
+      const fetchedRooms = data.edges.map((edge) => edge.node);
+      const fetchedIds = fetchedRooms.map(({ id }) => id);
 
-    hasNextPage = data.pageInfo.hasNextPage;
-    cursor = data.pageInfo.endCursor;
+      allRooms.push(...fetchedRooms);
 
-    logInfo(
-      prettierLines([
-        ['🎾 Fetched ', 'white'],
-        [roomIds.length.toString(), 'yellow'],
-        [' room IDs | ', 'white'],
-        ['cursor →  ', 'white'],
-        [cursor.toString(), 'yellow'],
-        [' | hasNextPage →  ', 'white'],
-        [hasNextPage.toString(), 'yellow'],
-      ])
-    );
-
-    await new Promise((response) => setTimeout(response, 100));
+      hasNextPage = data.pageInfo.hasNextPage;
+      cursor = data.pageInfo.endCursor;
+      await new Promise((response) => setTimeout(response, 100));
+    }
+  } catch (err) {
+    logError(`Room query failed with errors:, ${err}`);
+    throw err;
   }
-  return allRoomIds;
+  return allRooms;
+}
+
+export async function fetchDevices(accessToken, options = {}) {
+  if (!accessToken)
+    throw new Error('No access token provided. Cannot fetchRoomIds');
+
+  let allDevices = [];
+  let hasNextPage = true;
+  let { nextToken = null, pageSize = 100 } = options;
+
+  try {
+    const query = /* GQL */ `
+        query devices($params: DeviceFindArgs){
+          deviceSearch(params: $params) {
+            edges {
+              node {
+                id
+                name
+              }
+            }
+            pageInfo {
+              hasNextPage
+              nextToken
+              totalCount
+            }
+          error
+          }
+        }
+      `;
+
+    logInfo(
+      prettierLines([
+        ['🌐 Batch-retrieving device IDs from Lens GQL endpoint: '],
+        [config.httpEp.toString(), 'yellow'],
+      ])
+    );
+
+    while (hasNextPage) {
+      const response = await axios.post(
+        config.httpEp,
+        {
+          query,
+          variables: {
+            params: {
+              pageSize: pageSize,
+              nextToken: nextToken,
+            },
+          },
+        },
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const data = response.data?.data?.deviceSearch;
+
+      if (!data) throw new Error('Unexpected GraphQL response structure');
+
+      const fetchedDevices = data.edges.map((edge) => edge.node);
+      const fetchedIds = fetchedDevices.map(({ id }) => id);
+
+      allDevices.push(...fetchedDevices);
+
+      hasNextPage = data.pageInfo.hasNextPage;
+      nextToken = data.pageInfo.nextToken;
+
+      await new Promise((response) => setTimeout(response, 100));
+    }
+  } catch (err) {
+    logError(`Device ID fetch failed with errors:, ${err}`);
+    throw err;
+  }
+  return allDevices;
 }
