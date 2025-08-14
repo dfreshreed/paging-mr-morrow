@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import { getAccessToken } from './utils/auth.js';
-import { fetchRoomIds } from './utils/api.js';
+import { fetchRooms, fetchDevices } from './utils/api.js';
 import { config } from './utils/config.js';
 import { prettierJson } from './utils/formatter.js';
 import {
@@ -9,64 +9,102 @@ import {
   prettierLines,
   startWaiting,
   incomingMessage,
+  logMessage,
+  getTimeStamp,
+  logStyles,
 } from './utils/logger.js';
 
 const SUB_ID_PEOPLE = '1';
 const SUB_ID_DEVICES = '2';
 
 export async function startWebSocket() {
-  try {
-    const accessToken = await getAccessToken();
-    const roomIds = await fetchRoomIds(accessToken);
-    const tenantId = config.tenantId;
-    const deviceIds = ['00e0db93723a', '00e0db775ba0', '00e0db671a50'];
+  let ws;
+  let pingInterval;
+  let pongTimeout;
+  let driftInterval;
 
-    logInfo(
-      prettierLines([
-        ['Got ', 'white'],
-        [roomIds.length.toString(), 'yellow'],
-        [' roomIds', 'cyan'],
-      ])
-    );
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
 
-    logInfo(
-      prettierLines([
-        ['🛰 Connecting to WebSocket: ', 'white'],
-        [config.wsEp.toString(), 'yellow'],
-      ])
-    );
+  function scheduleReconnect(immediate = false) {
+    if (reconnectTimer) return;
 
-    const ws = new WebSocket(config.wsEp, 'graphql-transport-ws');
+    const base = 1000; //1 second
+    const cap = 30000; // 30 second max
+    const jitter = Math.floor(Math.random() * 300);
+    const delay = immediate
+      ? 0
+      : Math.min(cap, base * 2 ** reconnectAttempts) + jitter;
 
-    ws.on('open', async () => {
-      logInfo('⛓️ Connected to WebSocket \n');
-      startWaiting();
+    if (!immediate) reconnectAttempts += 1;
 
-      const initMessage = {
-        type: 'connection_init',
-        payload: {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
-      };
-      ws.send(JSON.stringify(initMessage));
+    logInfo(`Reconnecting in ${Math.round(delay / 1000)}s...`);
 
-      setTimeout(() => {
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  function cleanup() {
+    clearInterval(pingInterval);
+    clearTimeout(pongTimeout);
+    clearInterval(driftInterval);
+    if (!ws) return;
+    ws.removeAllListeners();
+  }
+
+  async function connect() {
+    try {
+      const accessToken = await getAccessToken();
+      const rooms = await fetchRooms(accessToken);
+      const devices = await fetchDevices(accessToken);
+      const roomCache = rooms.reduce((map, { id, name }) => {
+        map[id] = name;
+        return map;
+      }, {});
+      const roomIds = rooms.map(({ id }) => id);
+      const tenantId = config.tenantId;
+      const deviceIds = devices.map(({ id }) => id);
+
+      logInfo(
+        prettierLines([
+          ['Total roomIds Fetched: ', 'info'],
+          [rooms.length.toString(), 'greenish'],
+        ])
+      );
+
+      logInfo(
+        prettierLines([
+          ['Total deviceIds Fetched: ', 'info'],
+          [devices.length.toString(), 'greenish'],
+        ])
+      );
+
+      logInfo(
+        prettierLines([
+          ['🌐 Connecting to Lens WebSocket Endpoint: ', 'info'],
+          [config.wsEp.toString(), 'yellow'],
+        ])
+      );
+
+      ws = new WebSocket(config.wsEp, 'graphql-transport-ws');
+
+      function sendSubscriptions() {
         ws.send(
           JSON.stringify({
             id: SUB_ID_PEOPLE,
             type: 'subscribe',
             payload: {
               query: `subscription PeopleCountStream($tenantId: ID!, $roomIds: [ID!]!) {
-              peopleCountStream(tenantId: $tenantId, roomIds: $roomIds) {
-                count
-                roomId
-                tenantId
-                updatedAt
+                peopleCountStream(tenantId: $tenantId, roomIds: $roomIds) {
+                  count
+                  roomId
+                  tenantId
+                  updatedAt
+                }
               }
-            }
-          `,
+            `,
               variables: {
                 tenantId: tenantId,
                 roomIds: roomIds,
@@ -74,101 +112,202 @@ export async function startWebSocket() {
             },
           })
         );
-
         ws.send(
           JSON.stringify({
             id: SUB_ID_DEVICES,
             type: 'subscribe',
             payload: {
               query: `subscription DeviceStream($deviceIds: [String!]!) {
-              deviceStream(deviceIds: $deviceIds) {
-                connected
-                externalIp
-                hardwareRevision
-                id
-                macAddress
-                modelId
-                name
-                productId
-                roomId
-                siteId
-                softwareBuild
-                softwareVersion
-                tenantId
+                deviceStream(deviceIds: $deviceIds) {
+                  connected
+                  externalIp
+                  hardwareRevision
+                  id
+                  macAddress
+                  modelId
+                  name
+                  productId
+                  roomId
+                  siteId
+                  softwareBuild
+                  softwareVersion
+                  tenantId
+                }
               }
-            }
-          `,
+            `,
               variables: { deviceIds },
             },
           })
         );
-      }, 1000);
-    });
-
-    ws.on('message', (data) => {
-      incomingMessage();
-      const timeStamp = new Date().toLocaleTimeString();
-      const parsed = JSON.parse(data);
-
-      if (!parsed.payload) {
-        logInfo(
-          `${timeStamp} ⚠️ Skipping non-payload message: ${
-            parsed.type || 'unknown'
-          }`
-        );
-        startWaiting();
-        return;
       }
 
-      const subContent = prettierJson(parsed.payload);
-
-      switch (parsed.id) {
-        case SUB_ID_DEVICES:
-          logInfo(
-            prettierLines([
-              [timeStamp.toString(), 'white'],
-              [' Device Stream Data:', 'cyan'],
-            ])
-          ),
-            logInfo(`${subContent}`);
-          break;
-        case SUB_ID_PEOPLE:
-          logInfo(
-            prettierLines([
-              [timeStamp.toString(), 'white'],
-              [' People Count Data:', 'cyan'],
-            ])
-          ),
-            logInfo(`${subContent}`);
-          break;
-        default:
-          logError(`Unknown message id: ${parsed}`);
-      }
-      startWaiting();
-    });
-
-    ws.on('error', (err) => {
-      logError(`❌ ERRRRROR: ${err.message}`);
-    });
-
-    ws.on('close', async (code, reason) => {
-      logError(
-        `🪓 Disconnected code: ${code}, reason: ${reason} || 'no reason'`
-      );
-      if ((code === 4401) | (code === 4403)) {
-        logInfo('🪙 Trying to get a fresh new token');
+      ws.on('open', () => {
         try {
-          await startWebSocket();
-        } catch {
-          logError('❌ Failed to refresh accessToken. Exiting');
-          process.exit(1);
+          logInfo('⛓️ Connected to WebSocket');
+          startWaiting();
+          reconnectAttempts = 0; // on healthy connect reset backoff
+          ws.send(
+            JSON.stringify({
+              type: 'connection_init',
+              payload: {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+              },
+            })
+          );
+
+          //heartbeat check
+          pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.ping();
+              clearTimeout(pongTimeout);
+              pongTimeout = setTimeout(() => {
+                logError('Pong took too long, terminating socket');
+                ws.terminate();
+              }, 30000);
+            }
+          }, 15000);
+
+          ws.on('pong', () => {
+            clearTimeout(pongTimeout);
+          });
+
+          let last = Date.now();
+          driftInterval = setInterval(() => {
+            const now = Date.now();
+
+            if (now - last > 62000) {
+              logInfo('System resumed from sleep, forcing reconnect');
+              ws.terminate();
+            }
+            last = now;
+          }, 60000);
+        } catch (err) {
+          logError(' Unexpected error in open handler:', err);
+          ws.terminate();
         }
-      } else {
-        logInfo('♻️ Reconnecting in 5, 4, 3, 2, 1');
-        setTimeout(startWebSocket, 5000);
-      }
-    });
-  } catch (error) {
-    logError(`💀 Fatal WebSocket Issue: ${error}`);
+      });
+
+      ws.on('message', (data) => {
+        incomingMessage();
+
+        let wsmsg;
+        try {
+          wsmsg = JSON.parse(data);
+        } catch (err) {
+          logError('Invalid JSON message', err);
+          return startWaiting();
+        }
+
+        const { type, id, payload } = wsmsg;
+
+        switch (type) {
+          case 'connection_ack':
+            logInfo(
+              prettierLines([
+                [`{ ${type} }: `, 'info'],
+                ['Server acknowledged connection', 'yellow'],
+              ])
+            );
+            sendSubscriptions();
+            return startWaiting();
+
+          case 'next':
+            const { data } = payload;
+            const subContent = prettierJson(payload);
+
+            switch (id) {
+              case SUB_ID_DEVICES:
+                getTimeStamp();
+                logMessage(`  ${subContent}`);
+                break;
+
+              case SUB_ID_PEOPLE:
+                const body = data.peopleCountStream;
+                const json = prettierJson(body);
+                const { roomId, count } = data.peopleCountStream;
+                const roomName = roomCache[roomId] || roomId;
+
+                const roomLabel = prettierLines([
+                  [` [${roomName}] People Count: `, 'white'],
+                  [count.toString(), 'reddish'],
+                ]);
+                logInfo(`${roomLabel}`, logStyles.bold);
+                logMessage(`${json}`);
+                break;
+
+              default:
+                logError(`Unknown subscription id: ${id}`);
+            }
+            return startWaiting();
+
+          case 'error':
+            const { errors } = payload;
+            for (const err of errors) {
+              const code = err.extensions?.code || 'UNKNOWN';
+              logError(` GraphQL error [${code}] on ${id}: ${err.message}`);
+
+              if (code === 'UNAUTHENTICATED') {
+                logInfo(
+                  ' Token expired. Fetching a fresh one and attempting reconnect'
+                );
+                return ws.terminate();
+              }
+            }
+            return startWaiting();
+
+          case 'complete':
+            logInfo(` Subscription ${id} complete`);
+            return startWaiting();
+
+          case 'ping':
+            ws.send(JSON.stringify({ type: 'pong' }));
+            return;
+
+          case 'pong':
+            clearTimeout(pongTimeout);
+            return;
+
+          default:
+            logError(` Unknown message type: ${wsmsg.type || 'unknown'}`);
+        }
+      });
+
+      ws.on('error', (err) => {
+        logError(`❌ ERRRRROR: ${err.message || err}`);
+        ws.terminate();
+      });
+
+      ws.on('close', (code, reason) => {
+        try {
+          cleanup();
+
+          const reasonText = Buffer.isBuffer(reason)
+            ? reason.toString()
+            : reason || 'no reason';
+
+          logError(`🪓 Disconnected code: ${code}, reason: ${reasonText}`);
+
+          // Auth issues - try reconnect/fetch fresh token
+          if (code === 4401 || code === 4403) {
+            logInfo('🪙 Trying to get a fresh auth token');
+            return scheduleReconnect(true);
+          }
+
+          // everything else - back off reconnect
+          scheduleReconnect(false);
+        } catch (err) {
+          logError(' Error in close handler:', err);
+          scheduleReconnect(false);
+        }
+      });
+    } catch (error) {
+      //startup failures
+      logError(`💀 Fatal WebSocket Issue: ${error.message || error}`);
+      scheduleReconnect(false);
+    }
   }
+
+  await connect();
 }
