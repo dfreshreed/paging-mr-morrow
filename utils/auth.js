@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { logInfo, logError } from './logger.js';
+import { logInfo, logError, logMessage, logStyles } from './logger.js';
 import { config } from './config.js';
 import { prettierJson } from './formatter.js';
 
@@ -7,8 +7,8 @@ let accessToken = null;
 
 export async function getAccessToken() {
   try {
-    logInfo('🔍 Requesting token with: ');
-    logInfo(
+    logInfo('🔍 Requesting token with: ', logStyles.white);
+    logMessage(
       prettierJson({
         authEp: config.authEp,
         client_id: config.clientId,
@@ -30,7 +30,7 @@ export async function getAccessToken() {
     );
 
     accessToken = response.data.access_token;
-    logInfo('🔑 Got Access Token');
+    logInfo('🔑 Got Access Token: [redacted]', logStyles.info);
     return accessToken;
   } catch (error) {
     logError(

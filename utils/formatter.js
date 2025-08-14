@@ -1,4 +1,4 @@
-import chalk from 'chalk';
+import { logStyles } from './logger.js';
 
 export function prettierJson(json) {
   const jsonString = JSON.stringify(json, null, 2);
@@ -7,20 +7,20 @@ export function prettierJson(json) {
 
       //keys: "id":
       .replace(/"(\w+)":/g, (_match, key) => {
-        const coloredKey = chalk.rgb(255, 209, 24)(`"${key}"`);
+        const coloredKey = logStyles.blue(`"${key}"`);
         return `${coloredKey}:`;
       })
-      //string vals: : "x1ed234"
+      //string valuess:"x1ed234"
       .replace(/:\s*"([^"]+)"/g, (_match, val) => {
-        return `: ${chalk.green(`"${val}"`)}`;
+        return `: ${logStyles.yellow(`"${val}"`)}`;
       })
-      //numbers: : 124532
+      //numbers: 124532
       .replace(/: (\d+)/g, (_match, num) => {
-        return `: ${chalk.yellow(num)}`;
+        return `: ${logStyles.magenta(num)}`;
       })
       //bools: :true or :false
       .replace(/: (true|false)/g, (_match, bool) => {
-        return `: ${chalk.magenta(bool)}`;
+        return `: ${logStyles.green(bool)}`;
       })
   );
 }

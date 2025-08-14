@@ -2,23 +2,59 @@ import chalk from 'chalk';
 
 let waitingInt = null;
 
-export function logInfo(msg) {
-  console.log(chalk.rgb(84, 158, 247)('\n' + msg));
+const infoStyle = chalk.rgb(101, 170, 255);
+
+export const logStyles = {
+  info: infoStyle,
+  bold: infoStyle.bold,
+  dim: infoStyle.dim,
+  error: chalk.red,
+  green: chalk.green,
+  yellow: chalk.yellow,
+  gold: chalk.hex('#F7D346'),
+  dimGold: chalk.dim.hex('#ffdd60ff'),
+  warning: chalk.hex('#FFA500'),
+  test: chalk.blue.underline,
+  time: chalk.dim.white,
+  reddish: chalk.hex('#ff92acff'),
+  greenish: chalk.hex('#B7FD9B'),
+  white: chalk.hex('#C1C5CE'),
+  blue: chalk.blue,
+  magenta: chalk.hex('#EC98F7'),
+};
+
+export function getTimeStamp(style = logStyles.time) {
+  //TODO: fallback for international localized formatting
+  return style(new Date().toLocaleString());
+}
+
+export function logInfo(msg, style = logStyles.info) {
+  const dtStamp = getTimeStamp();
+  console.log(`\n${dtStamp} `, style(`${msg}`));
+}
+
+export function logMessage(msg, style = logStyles.info) {
+  const lines = msg.split('\n');
+  const indented = lines.map((line) => '    ' + line).join('\n');
+  console.log(style(`\n${indented}`));
 }
 
 export function prettierLines(segments) {
-  return segments.map(([str, color]) => chalk[color](str)).join('');
+  return segments
+    .map(([str, styleKey]) => {
+      const styleFn = logStyles[styleKey] || ((style) => style);
+      return styleFn(str);
+    })
+    .join('');
 }
 
-export function logError(msg) {
-  console.log(chalk.red(msg));
+export function logError(msg, style = logStyles.error) {
+  console.log(style(msg));
 }
 
-export function startWaiting() {
+export function startWaiting(style = logStyles.dim) {
   waitingInt = setInterval(() => {
-    logInfo(
-      new Date().toLocaleTimeString() + ' ⏳ Waiting for next transmission...'
-    );
+    logInfo(style('⏳ Waiting for next transmission...'));
   }, 5000); //update cli every 5 seconds while waiting for a message. help user feel more comfy that something's not broken.
 }
 
@@ -29,7 +65,7 @@ export function stopWaiting() {
   }
 }
 
-export function incomingMessage() {
+export function incomingMessage(style = logStyles.greenish) {
   stopWaiting();
-  logInfo(new Date().toLocaleTimeString() + ' 🤖 Incoming transmission...');
+  logInfo(style('🤖 Incoming transmission...'));
 }
