@@ -28,7 +28,9 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 │   ├── auth.js         # OAuth token retrieval
 │   ├── config.js       # Environment config
 │   ├── formatter.js    # JSON color formatting for CLI
-│   └── logger.js       # Colorized logging and waiting messages
+│   ├── logger.js       # Colorized logging and waiting messages
+│   ├── net.js          # Network readiness + wait for DNS retry mechanism
+│   └── wsCodes.js      # WebSocket close code mapper for logging
 ├── wsClient.js         # WebSocket connection logic
 ├── pagingMrMorrow.js             # Entry point (AKA file you run to fire it up)
 ├── .env.example        # Example environment variable file
@@ -48,57 +50,57 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 
 ---
 
-## Environment Variables
-
-Copy `.env.example` to create a local `.env`
-
-```bash
-cp .env.example .env
-```
-
-Fill in your credentials:
-
-```bash
-HTTP_URL=https://api.silica-prod01.io.lens.poly.com/graphql
-WS_URL=wss://api.silica-prod01.io.lens.poly.com/graphql
-AUTH_URL=https://login.lens.poly.com/oauth/token
-
-CLIENT_ID=yourLensClientId
-CLIENT_SECRET=yourLensClientSecret
-TENANT_ID=yourLensTenantId
-```
-
----
-
 ## Installation
 
-Install dependencies using:
+From the project root:
 
-`npm install`
+1. Copy `.env.example` to create a local `.env`
 
----
+   ```bash
+   cp .env.example .env
+   ```
 
-## Usage
+   And fill in your credentials:
 
-Fire up the WebSocket Client:
+   ```bash
+   HTTP_URL=https://api.silica-prod01.io.lens.poly.com/graphql
+   WS_URL=wss://api.silica-prod01.io.lens.poly.com/graphql
+   AUTH_URL=https://login.lens.poly.com/oauth/token
 
-```css
-node pagingMrMorrow.js
-```
+   CLIENT_ID=yourLensClientId
+   CLIENT_SECRET=yourLensClientSecret
+   TENANT_ID=yourLensTenantId
+   ```
 
-You should see messages print indicating Auth credential exchange, token retrieval, room & site id fetching, and WebSocket connection/server ack:
+2. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+3. Run it:
+
+   ```css
+   node pagingMrMorrow.js
+   ```
+
+### What You'll See
+
+- **Prefetch details:** Auth credential exchange, token retrieval, total roomIds/deviceIds fetched
+- **Connection** "🌐 Connecting to Lens WebSocket Endpoint" followed by a `{ connection_ack }`
+- **Idle Heartbeat** Every 5 seconds, "⌛ Waiting for next transmission". "🤖 Incoming transmission" on message arrival.
 
 <p align="center">
     <img src="./assets/img/pmm-fire-up.png" alt="Example Paging Mr Morrow Fire Up CLI Messages" style="max-width:800px; width:100%; height:auto;" />
 </p>
 
-When a `deviceStream` message is received:
+- **Incoming** `deviceStream` message:
 
 <p align="center">
     <img src="./assets/img/deviceStreamMessage2.png" alt="Example Device Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
 </p>
 
-When a `peopleCountStream` message is received:
+- **Incoming** `peopleCountStream` message:
 
 <p align="center">
     <img src="./assets/img/peopleCountMessage.png" alt="Example People Count Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
@@ -115,8 +117,9 @@ When a `peopleCountStream` message is received:
    - `peopleCountStream`
    - `deviceStream`
 5. Maintains liveness:
-   - Sends protocol `ping` every 15s, expects `pong` within 30s (or reconnects)
-   - Detects system sleep by clock drift and forces reconnect after resume
+   - Waits for AUTH/HTTP/WS to resolve before connection
+   - Sends protocol `ping` every 15s, expects `pong` within 30s (or forces reconnect)
+   - Detects system sleep by clock drift >22s and forces reconnect after resume
 6. On disconnect or error:
    - For auth errors, immediately reconnect (next connection fetches a fresh token)
    - Otherwise, reconnect with exponential backoff + jitter
