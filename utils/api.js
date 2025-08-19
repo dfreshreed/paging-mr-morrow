@@ -62,7 +62,6 @@ export async function fetchRooms(accessToken, options = {}) {
       if (!data) throw new Error('Unexpected GraphQL response structure');
 
       const fetchedRooms = data.edges.map((edge) => edge.node);
-      const fetchedIds = fetchedRooms.map(({ id }) => id);
 
       allRooms.push(...fetchedRooms);
 
@@ -71,7 +70,7 @@ export async function fetchRooms(accessToken, options = {}) {
       await new Promise((response) => setTimeout(response, 100));
     }
   } catch (err) {
-    logError(`Room query failed with errors:, ${err}`);
+    logError('Room query failed', err);
     throw err;
   }
   return allRooms;
@@ -93,6 +92,7 @@ export async function fetchDevices(accessToken, options = {}) {
               node {
                 id
                 name
+                displayName
               }
             }
             pageInfo {
@@ -131,7 +131,6 @@ export async function fetchDevices(accessToken, options = {}) {
       if (!data) throw new Error('Unexpected GraphQL response structure');
 
       const fetchedDevices = data.edges.map((edge) => edge.node);
-      const fetchedIds = fetchedDevices.map(({ id }) => id);
 
       allDevices.push(...fetchedDevices);
 
@@ -141,7 +140,7 @@ export async function fetchDevices(accessToken, options = {}) {
       await new Promise((response) => setTimeout(response, 100));
     }
   } catch (err) {
-    logError(`Device ID fetch failed with errors:, ${err}`);
+    logError('Device ID fetch failed', err);
     throw err;
   }
   return allDevices;

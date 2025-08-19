@@ -33,11 +33,7 @@ export async function getAccessToken() {
     logInfo('🔑 Got Access Token: [redacted]', logStyles.info);
     return accessToken;
   } catch (error) {
-    logError(
-      `accessToken request failed 🚨 => ${
-        error.response?.data || error.message
-      }`
-    );
-    throw new Error();
+    logError('accessToken request failed 🚨 =>', error);
+    throw error;
   }
 }

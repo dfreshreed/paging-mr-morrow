@@ -10,7 +10,7 @@ export function prettierJson(json) {
         const coloredKey = logStyles.blue(`"${key}"`);
         return `${coloredKey}:`;
       })
-      //string valuess:"x1ed234"
+      //string values:"x1ed234"
       .replace(/:\s*"([^"]+)"/g, (_match, val) => {
         return `: ${logStyles.yellow(`"${val}"`)}`;
       })

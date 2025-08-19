@@ -10,9 +10,11 @@ import {
   startWaiting,
   incomingMessage,
   logMessage,
-  getTimeStamp,
   logStyles,
 } from './utils/logger.js';
+
+import { prettyClose } from './utils/wsCodes.js';
+import { waitForDns, isTransientNetError } from './utils/net.js';
 
 const SUB_ID_PEOPLE = '1';
 const SUB_ID_DEVICES = '2';
@@ -25,18 +27,25 @@ export async function startWebSocket() {
 
   let reconnectTimer = null;
   let reconnectAttempts = 0;
+  let lastCloseHint = null;
 
-  function scheduleReconnect(immediate = false) {
+  const setCloseHint = (hint) => {
+    lastCloseHint = hint;
+  };
+  const DRIFT_CHECK_MS = 15000; //15 second check
+  const DRIFT_THRESHOLD_MS = 22000; //22 second max threshold for sleep/clock drift
+
+  function scheduleReconnect(minDelayMs = 0) {
     if (reconnectTimer) return;
+
+    const wokeFromSleep = (lastCloseHint || '').includes('Sleep/clock drift');
 
     const base = 1000; //1 second
     const cap = 30000; // 30 second max
-    const jitter = Math.floor(Math.random() * 300);
-    const delay = immediate
-      ? 0
-      : Math.min(cap, base * 2 ** reconnectAttempts) + jitter;
-
-    if (!immediate) reconnectAttempts += 1;
+    const jitter = Math.floor(Math.random() * 300); // help avoid network blip collision
+    const backoff = Math.min(cap, base * 2 ** reconnectAttempts) + jitter;
+    const delay = Math.max(minDelayMs, wokeFromSleep ? 5000 : 0, backoff);
+    reconnectAttempts += 1;
 
     logInfo(`Reconnecting in ${Math.round(delay / 1000)}s...`);
 
@@ -56,13 +65,56 @@ export async function startWebSocket() {
 
   async function connect() {
     try {
-      const accessToken = await getAccessToken();
-      const rooms = await fetchRooms(accessToken);
-      const devices = await fetchDevices(accessToken);
+      const hosts = [
+        new URL(config.authEp).hostname,
+        new URL(config.httpEp).hostname,
+        new URL(config.wsEp).hostname,
+      ];
+      const dnsReady = await waitForDns(hosts, {
+        timeoutMs: 20000,
+        intervalMs: 1000,
+      });
+      if (!dnsReady) {
+        logError('Network is not ready - DNS failing. Backing off');
+        return scheduleReconnect(5000);
+      }
+
+      let accessToken;
+      try {
+        accessToken = await getAccessToken();
+      } catch (err) {
+        if (isTransientNetError(err)) {
+          logError(
+            `Transient network error getting token (${err.code}). Backing off`
+          );
+          return scheduleReconnect(5000);
+        }
+        throw err;
+      }
+
+      let rooms, devices;
+      try {
+        rooms = await fetchRooms(accessToken);
+        devices = await fetchDevices(accessToken);
+      } catch (err) {
+        if (isTransientNetError(err)) {
+          logError(
+            `Transient network error during room/device prefetch (${err.code}). Backing off.`
+          );
+          return scheduleReconnect(5000);
+        }
+        throw err;
+      }
+
       const roomCache = rooms.reduce((map, { id, name }) => {
         map[id] = name;
         return map;
       }, {});
+      const deviceCache = devices.reduce((map, { id, name, displayName }) => {
+        map[id] = { name, displayName };
+        return map;
+      }, {});
+
       const roomIds = rooms.map(({ id }) => id);
       const tenantId = config.tenantId;
       const deviceIds = devices.map(({ id }) => id);
@@ -91,6 +143,7 @@ export async function startWebSocket() {
       ws = new WebSocket(config.wsEp, 'graphql-transport-ws');
 
       function sendSubscriptions() {
+        // people
         ws.send(
           JSON.stringify({
             id: SUB_ID_PEOPLE,
@@ -112,6 +165,7 @@ export async function startWebSocket() {
             },
           })
         );
+        // devices
         ws.send(
           JSON.stringify({
             id: SUB_ID_DEVICES,
@@ -158,12 +212,14 @@ export async function startWebSocket() {
           );
 
           //heartbeat check
+          clearInterval(pingInterval);
           pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
               ws.ping();
               clearTimeout(pongTimeout);
               pongTimeout = setTimeout(() => {
                 logError('Pong took too long, terminating socket');
+                setCloseHint('Heartbeat watchdog: no pong within 30s');
                 ws.terminate();
               }, 30000);
             }
@@ -172,19 +228,27 @@ export async function startWebSocket() {
           ws.on('pong', () => {
             clearTimeout(pongTimeout);
           });
+          // drift/sleep detection
+          let lastTick = Date.now();
+          clearInterval(driftInterval);
 
-          let last = Date.now();
           driftInterval = setInterval(() => {
             const now = Date.now();
+            const gap = now - lastTick;
 
-            if (now - last > 62000) {
+            if (gap > DRIFT_THRESHOLD_MS) {
               logInfo('System resumed from sleep, forcing reconnect');
+              setCloseHint(
+                `Sleep/clock drift detected: ${gap}ms > ${DRIFT_THRESHOLD_MS}ms`
+              );
               ws.terminate();
             }
-            last = now;
-          }, 60000);
+            lastTick = now;
+          }, DRIFT_CHECK_MS);
         } catch (err) {
-          logError(' Unexpected error in open handler:', err);
+          const msg = err?.message ?? String(err);
+          setCloseHint(`Unexpected error in open handler: ${msg}`);
+          logError(`Unexpected error in open handler: ${msg}`, { err });
           ws.terminate();
         }
       });
@@ -196,7 +260,8 @@ export async function startWebSocket() {
         try {
           wsmsg = JSON.parse(data);
         } catch (err) {
-          logError('Invalid JSON message', err);
+          const msg = err?.message ?? String(err);
+          logError(`Invalid JSON message: ${msg}`, { err });
           return startWaiting();
         }
 
@@ -214,19 +279,36 @@ export async function startWebSocket() {
             return startWaiting();
 
           case 'next':
-            const { data } = payload;
-            const subContent = prettierJson(payload);
+            if (!payload || typeof payload !== 'object') {
+              logError('next frame missing payload:', { wsmsg });
+              return;
+            }
+            const { data: gqlData } = payload;
+            const subContent = prettierJson(payload || {});
 
             switch (id) {
               case SUB_ID_DEVICES:
-                getTimeStamp();
+                const device = gqlData.deviceStream;
+                const deviceId = device.id;
+                const cached = deviceCache[deviceId] || {};
+                const deviceName =
+                  cached?.name ??
+                  cached?.displayName ??
+                  device.name ??
+                  'Unknown Device Name';
+
+                const deviceLabel = prettierLines([
+                  ['Device Name: ', 'white'],
+                  [`${deviceName}`, 'reddish'],
+                ]);
+                logMessage(`${deviceLabel}`, logStyles.bold);
                 logMessage(`  ${subContent}`);
                 break;
 
               case SUB_ID_PEOPLE:
-                const body = data.peopleCountStream;
+                const body = gqlData.peopleCountStream;
                 const json = prettierJson(body);
-                const { roomId, count } = data.peopleCountStream;
+                const { roomId, count } = body;
                 const roomName = roomCache[roomId] || roomId;
 
                 const roomLabel = prettierLines([
@@ -245,13 +327,14 @@ export async function startWebSocket() {
           case 'error':
             const { errors } = payload;
             for (const err of errors) {
-              const code = err.extensions?.code || 'UNKNOWN';
-              logError(` GraphQL error [${code}] on ${id}: ${err.message}`);
+              const code = err.extensions?.code ?? 'UNKNOWN';
+              logError('GraphQL error', { code, id, err });
 
               if (code === 'UNAUTHENTICATED') {
                 logInfo(
                   ' Token expired. Fetching a fresh one and attempting reconnect'
                 );
+                setCloseHint('Token expired: reconnecting with fresh token');
                 return ws.terminate();
               }
             }
@@ -270,42 +353,47 @@ export async function startWebSocket() {
             return;
 
           default:
-            logError(` Unknown message type: ${wsmsg.type || 'unknown'}`);
+            logError('Unknown message type', {
+              type: wsmsg?.type ?? 'unknown',
+              wsmsg,
+            });
         }
       });
 
       ws.on('error', (err) => {
-        logError(`❌ ERRRRROR: ${err.message || err}`);
+        const msg = err?.message ?? String(err);
+        logError(`❌ ERROR: ${msg}`, { err });
+        setCloseHint(`WebSocket error: ${err.message}`, { err });
         ws.terminate();
       });
 
       ws.on('close', (code, reason) => {
         try {
           cleanup();
-
-          const reasonText = Buffer.isBuffer(reason)
-            ? reason.toString()
-            : reason || 'no reason';
-
-          logError(`🪓 Disconnected code: ${code}, reason: ${reasonText}`);
+          logError(
+            `🪓 Disconnected: ${prettyClose(code, reason, lastCloseHint)}`
+          );
+          lastCloseHint = null;
 
           // Auth issues - try reconnect/fetch fresh token
           if (code === 4401 || code === 4403) {
             logInfo('🪙 Trying to get a fresh auth token');
-            return scheduleReconnect(true);
+            return scheduleReconnect(3000);
           }
 
           // everything else - back off reconnect
-          scheduleReconnect(false);
+          scheduleReconnect();
         } catch (err) {
-          logError(' Error in close handler:', err);
-          scheduleReconnect(false);
+          const msg = err?.message ?? String(err);
+          logError(`Error in close handler: ${msg}`, { err });
+          scheduleReconnect();
         }
       });
-    } catch (error) {
+    } catch (err) {
       //startup failures
-      logError(`💀 Fatal WebSocket Issue: ${error.message || error}`);
-      scheduleReconnect(false);
+      const msg = err?.message ?? String(err);
+      logError(`💀 Fatal WebSocket Issue: ${msg}` || { err });
+      scheduleReconnect(5000);
     }
   }
 

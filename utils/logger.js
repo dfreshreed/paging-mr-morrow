@@ -23,6 +23,9 @@ export const logStyles = {
   magenta: chalk.hex('#EC98F7'),
 };
 
+const isStyleFunction = (value) => typeof value === 'function';
+const identity = (text) => text;
+
 export function getTimeStamp(style = logStyles.time) {
   //TODO: fallback for international localized formatting
   return style(new Date().toLocaleString());
@@ -42,14 +45,34 @@ export function logMessage(msg, style = logStyles.info) {
 export function prettierLines(segments) {
   return segments
     .map(([str, styleKey]) => {
-      const styleFn = logStyles[styleKey] || ((style) => style);
+      const styleFn = isStyleFunction(styleKey)
+        ? styleKey
+        : logStyles[styleKey] || identity;
       return styleFn(str);
     })
     .join('');
 }
 
-export function logError(msg, style = logStyles.error) {
-  console.log(style(msg));
+export function logError(message, metaOrStyle, maybeStyle) {
+  let style = logStyles.error;
+  let meta;
+
+  if (isStyleFunction(metaOrStyle) && maybeStyle === undefined) {
+    style = metaOrStyle;
+  } else if (!isStyleFunction(metaOrStyle) && metaOrStyle !== undefined) {
+    meta = metaOrStyle;
+    if (isStyleFunction(maybeStyle)) style = maybeStyle;
+  } else if (isStyleFunction(maybeStyle)) {
+    style = maybeStyle;
+  }
+  const dtStamp = getTimeStamp(identity);
+  const errorOut = `\n${dtStamp} ${style(String(message))}`;
+
+  if (meta !== undefined) {
+    console.error(errorOut, meta);
+  } else {
+    console.error(errorOut);
+  }
 }
 
 export function startWaiting(style = logStyles.dim) {

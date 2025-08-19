@@ -4,9 +4,13 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 
 ---
 
-## 🚀 Features
+## Features
 
-- Connects to Poly Lens GraphQL WebSocket API
+- Connects to Poly Lens GraphQL WebSocket API (graphql-transport-ws)
+  - Subscribes **after** `connection_ack`
+  - Heartbeat with `ping/pong` and 30s watchdog
+  - Sleep/wake drift detection (forces reconnect after wake)
+  - Exponential backoff + jitter on reconnect; single in flight reconnect
 - Authenticates via OAuth client credentials
 - Subscribes to:
   - People Count Stream → live occupancy data for rooms
@@ -16,7 +20,7 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ├── utils/
@@ -29,7 +33,7 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 ├── pagingMrMorrow.js             # Entry point (AKA file you run to fire it up)
 ├── .env.example        # Example environment variable file
 ├── .gitignore          # Git ignored files
-├── LICENSE             # License info
+├── LICENSE
 ├── package.json        # NPM metadata and dependencies
 ├── package-lock.json   # Locked dependency versions
 └── README.md
@@ -44,7 +48,7 @@ A Node.js client that connects to the Poly Lens GraphQL API via WebSocket, subsc
 
 ---
 
-## 🔑 Environment Variables
+## Environment Variables
 
 Copy `.env.example` to create a local `.env`
 
@@ -52,7 +56,7 @@ Copy `.env.example` to create a local `.env`
 cp .env.example .env
 ```
 
-Replace the placeholder text with your API Credentials, Tenant ID, and Site ID `.env`:
+Fill in your credentials:
 
 ```bash
 HTTP_URL=https://api.silica-prod01.io.lens.poly.com/graphql
@@ -66,15 +70,15 @@ TENANT_ID=yourLensTenantId
 
 ---
 
-## 🏗️ Installation
+## Installation
 
-Install dependencies:
+Install dependencies using:
 
 `npm install`
 
 ---
 
-## 🎬 Usage
+## Usage
 
 Fire up the WebSocket Client:
 
@@ -82,84 +86,66 @@ Fire up the WebSocket Client:
 node pagingMrMorrow.js
 ```
 
-You should see output like:
+You should see messages print indicating Auth credential exchange, token retrieval, room & site id fetching, and WebSocket connection/server ack:
 
-```bash
-🔍 Requesting token with:
-{
-  "authEp": "https://login.lens.poly.com/oauth/token",
-  "client_id": "yourClientId",
-  "client_secret": "[HIDDEN]",
-  "grant_type": "client_credentials"
-}
+<p align="center">
+    <img src="./assets/img/pmm-fire-up.png" alt="Example Paging Mr Morrow Fire Up CLI Messages" style="max-width:800px; width:100%; height:auto;" />
+</p>
 
-🔑 Got Access Token
+When a `deviceStream` message is received:
 
-▶️ HTTP endpoint is: https://api.silica-prod01.io.lens.poly.com/graphql
-RoomIds: 00e0db93723a,00e0db775ba0,...
-🎾 Fetched 15 room IDs | cursor → ey... | hasNextPage → true
+<p align="center">
+    <img src="./assets/img/deviceStreamMessage2.png" alt="Example Device Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
+</p>
 
-Got 32 roomIds
-🛰 Connecting to WebSocket: wss://api.silica-prod01.io.lens.poly.com/graphql
+When a `peopleCountStream` message is received:
 
-⛓️ Connected to WebSocket
-
-⏳ Waiting for next transmission...
-10:13:17 PM 🤖 Incoming transmission...
-10:13:17 PM Device Stream Data:
-{
-  "connected": true,
-  "externalIp": "...",
-  ...
-}
-⏳ Waiting for next transmission...
-```
+<p align="center">
+    <img src="./assets/img/peopleCountMessage.png" alt="Example People Count Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
+</p>
 
 ---
 
-## 🤓 How it Works
+## How it Works
 
-1. Fetch OAuth token from Lens Auth Endpoint using Lens API Connection (Client Credentials)
-
-2. Uses pagination to fetch a list of room IDs from the Lens GraphQL API
-
-3. Connects to the Websocket API and inits the GQL Connection
-
-4. Subscribes to:
-
-    - peopleCountStream
-
-    - deviceStream
-
-5. Parses and colorizes JSON payloads. Prints to the CLI in real-time.
-
-6. Refreshes token on expiry and automatically retries connection every 5 seconds on disconnect
+1. Fetch an OAuth token from Lens Auth Endpoint (using Client Credentials)
+2. Uses pagination to fetch room and device IDs
+3. Opens a WebSocket and sends `connection_init` with the OAuth token
+4. Waits for `connection_ack`, **then** sends two `subscribe` frames:
+   - `peopleCountStream`
+   - `deviceStream`
+5. Maintains liveness:
+   - Sends protocol `ping` every 15s, expects `pong` within 30s (or reconnects)
+   - Detects system sleep by clock drift and forces reconnect after resume
+6. On disconnect or error:
+   - For auth errors, immediately reconnect (next connection fetches a fresh token)
+   - Otherwise, reconnect with exponential backoff + jitter
 
 ---
 
-## 🚨 Error Handling
+## Error Handling
 
-- Token Expiry → Automatically refreshes and reconnects.
-
-- WebSocket Disconnect → Attempts reconnection every 5 seconds.
-
-- HTTP Errors → Logged to console for troubleshooting.
+- **UNAUTHENTICATED** (GraphQL error): terminate socket and reconnect
+  - The next connect flow fetches a fresh token automatically
+- **Network/Server Disconnect**: exponential backoff + jitter
+  - 1s → 2s → 3s - up to 30s
+  - Backoff resets after a successful connection
+- **Heartbeat Timeout**: if `pong` isn't seen within 30s, the client tears down and reconnects
+- **Invalid JSON/Protocol Errors**: logged and ignored for that frame
+  - The connection stays up unless the server closes it
 
 ---
 
-## 🎨 Customization
+## Troubleshooting
 
-### Adjust Device IDs
+**Fatal WebSocket Issue: `readyState 0 (CONNECTING)`**
 
-For now, you'll need to manually add some deviceIds in the array. I plan to fix this by running a query and populating them like I'm doing for the `roomIds`.
+Something tried to `ws.send(...)` before the socket opened. The client subscribes only after `connection_ack`, so you shouldn't see this unless you add custom sends outside the `open`/`message` handlers
 
-Edit `wsClient.js`:
+**No data after sleep**
 
-```bash
-const deviceIds = [
-  '00e0db93723a', //add your deviceIds here
-  '00e0db775ba0',
-  ...
-]
+The client detects clock drift and reconnects automatically. If you disable the drift check, restart manually after resume.
 
-```
+**Too many reconnects**
+
+Backoff + jitter are built in. You should not run multiple instances against the same tenant. Per the Lens API documentation, open one subscription per stream and pass an array of IDs. Multiple parallel clients can/will trigger throttling.
