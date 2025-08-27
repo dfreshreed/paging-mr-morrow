@@ -80,9 +80,11 @@ From the project root:
 
 3. Run it:
 
-   ```css
-   node pagingMrMorrow.js
-   ```
+   `npm start`
+
+   **or**
+
+   `node pagingMrMorrow.js`
 
 ### What You'll See
 
