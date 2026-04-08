@@ -19,7 +19,7 @@ import { waitForDns, isTransientNetError } from './utils/net.js';
 const SUB_ID_PEOPLE = '1';
 const SUB_ID_DEVICES = '2';
 
-export async function startWebSocket() {
+export async function startWebSocket({ people = true, devices = true } = {}) {
   let ws;
   let pingInterval;
   let pongTimeout;
@@ -28,6 +28,10 @@ export async function startWebSocket() {
   let reconnectTimer = null;
   let reconnectAttempts = 0;
   let lastCloseHint = null;
+
+  let roomIds = [];
+  let tenantId = config.tenantId;
+  let deviceIds = [];
 
   const setCloseHint = (hint) => {
     lastCloseHint = hint;
@@ -63,6 +67,64 @@ export async function startWebSocket() {
     ws.removeAllListeners();
   }
 
+  function sendSubscriptions(subId = null) {
+    // people
+    if (people && (!subId || subId === SUB_ID_PEOPLE)) {
+      ws.send(
+        JSON.stringify({
+          id: SUB_ID_PEOPLE,
+          type: 'subscribe',
+          payload: {
+            query: `subscription PeopleCountStream($tenantId: ID!, $roomIds: [ID!]!) {
+                peopleCountStream(tenantId: $tenantId, roomIds: $roomIds) {
+                  count
+                  roomId
+                  tenantId
+                  updatedAt
+                }
+              }
+            `,
+            variables: {
+              tenantId: tenantId,
+              roomIds: roomIds,
+            },
+          },
+        }),
+      );
+    }
+    // devices
+    if (devices && (!subId || subId === SUB_ID_DEVICES)) {
+      logInfo(`Subscribing to deviceStream with ${deviceIds.length} devices`);
+      ws.send(
+        JSON.stringify({
+          id: SUB_ID_DEVICES,
+          type: 'subscribe',
+          payload: {
+            query: `subscription DeviceStream($deviceIds: [String!]!) {
+                deviceStream(deviceIds: $deviceIds) {
+                  connected
+                  externalIp
+                  hardwareRevision
+                  id
+                  macAddress
+                  modelId
+                  name
+                  productId
+                  roomId
+                  siteId
+                  softwareBuild
+                  softwareVersion
+                  tenantId
+                }
+              }
+            `,
+            variables: { deviceIds },
+          },
+        }),
+      );
+    }
+  }
+
   async function connect() {
     try {
       const hosts = [
@@ -85,115 +147,66 @@ export async function startWebSocket() {
       } catch (err) {
         if (isTransientNetError(err)) {
           logError(
-            `Transient network error getting token (${err.code}). Backing off`
+            `Transient network error getting token (${err.code}). Backing off`,
           );
           return scheduleReconnect(5000);
         }
         throw err;
       }
 
-      let rooms, devices;
+      let fetchedRooms = [],
+        fetchedDevices = [];
       try {
-        rooms = await fetchRooms(accessToken);
-        devices = await fetchDevices(accessToken);
+        if (people) fetchedRooms = await fetchRooms(accessToken);
+        if (devices) fetchedDevices = await fetchDevices(accessToken);
       } catch (err) {
         if (isTransientNetError(err)) {
           logError(
-            `Transient network error during room/device prefetch (${err.code}). Backing off.`
+            `Transient network error during room/device prefetch (${err.code}). Backing off.`,
           );
           return scheduleReconnect(5000);
         }
         throw err;
       }
 
-      const roomCache = rooms.reduce((map, { id, name }) => {
+      const roomCache = fetchedRooms.reduce((map, { id, name }) => {
         map[id] = name;
         return map;
       }, {});
-      const deviceCache = devices.reduce((map, { id, name, displayName }) => {
-        map[id] = { name, displayName };
-        return map;
-      }, {});
+      const deviceCache = fetchedDevices.reduce(
+        (map, { id, name, displayName }) => {
+          map[id] = { name, displayName };
+          return map;
+        },
+        {},
+      );
 
-      const roomIds = rooms.map(({ id }) => id);
-      const tenantId = config.tenantId;
-      const deviceIds = devices.map(({ id }) => id);
+      roomIds = fetchedRooms.map(({ id }) => id);
+      tenantId = config.tenantId;
+      deviceIds = fetchedDevices.map(({ id }) => id);
 
       logInfo(
         prettierLines([
           ['Total roomIds Fetched: ', 'info'],
-          [rooms.length.toString(), 'greenish'],
-        ])
+          [fetchedRooms.length.toString(), 'greenish'],
+        ]),
       );
 
       logInfo(
         prettierLines([
           ['Total deviceIds Fetched: ', 'info'],
-          [devices.length.toString(), 'greenish'],
-        ])
+          [fetchedDevices.length.toString(), 'greenish'],
+        ]),
       );
 
       logInfo(
         prettierLines([
           ['🌐 Connecting to Lens WebSocket Endpoint: ', 'info'],
           [config.wsEp.toString(), 'yellow'],
-        ])
+        ]),
       );
 
       ws = new WebSocket(config.wsEp, 'graphql-transport-ws');
-
-      function sendSubscriptions() {
-        // people
-        ws.send(
-          JSON.stringify({
-            id: SUB_ID_PEOPLE,
-            type: 'subscribe',
-            payload: {
-              query: `subscription PeopleCountStream($tenantId: ID!, $roomIds: [ID!]!) {
-                peopleCountStream(tenantId: $tenantId, roomIds: $roomIds) {
-                  count
-                  roomId
-                  tenantId
-                  updatedAt
-                }
-              }
-            `,
-              variables: {
-                tenantId: tenantId,
-                roomIds: roomIds,
-              },
-            },
-          })
-        );
-        // devices
-        ws.send(
-          JSON.stringify({
-            id: SUB_ID_DEVICES,
-            type: 'subscribe',
-            payload: {
-              query: `subscription DeviceStream($deviceIds: [String!]!) {
-                deviceStream(deviceIds: $deviceIds) {
-                  connected
-                  externalIp
-                  hardwareRevision
-                  id
-                  macAddress
-                  modelId
-                  name
-                  productId
-                  roomId
-                  siteId
-                  softwareBuild
-                  softwareVersion
-                  tenantId
-                }
-              }
-            `,
-              variables: { deviceIds },
-            },
-          })
-        );
-      }
 
       ws.on('open', () => {
         try {
@@ -208,7 +221,7 @@ export async function startWebSocket() {
                   Authorization: `Bearer ${accessToken}`,
                 },
               },
-            })
+            }),
           );
 
           //heartbeat check
@@ -239,7 +252,7 @@ export async function startWebSocket() {
             if (gap > DRIFT_THRESHOLD_MS) {
               logInfo('System resumed from sleep, forcing reconnect');
               setCloseHint(
-                `Sleep/clock drift detected: ${gap}ms > ${DRIFT_THRESHOLD_MS}ms`
+                `Sleep/clock drift detected: ${gap}ms > ${DRIFT_THRESHOLD_MS}ms`,
               );
               ws.terminate();
             }
@@ -273,7 +286,7 @@ export async function startWebSocket() {
               prettierLines([
                 [`{ ${type} }: `, 'info'],
                 ['Server acknowledged connection', 'yellow'],
-              ])
+              ]),
             );
             sendSubscriptions();
             return startWaiting();
@@ -283,65 +296,80 @@ export async function startWebSocket() {
               logError('next frame missing payload:', { wsmsg });
               return;
             }
-            const { data: gqlData } = payload;
-            const subContent = prettierJson(payload || {});
+            try {
+              const { data: gqlData } = payload;
+              const subContent = prettierJson(payload || {});
 
-            switch (id) {
-              case SUB_ID_DEVICES:
-                const device = gqlData.deviceStream;
-                const deviceId = device.id;
-                const cached = deviceCache[deviceId] || {};
-                const deviceName =
-                  cached?.name ??
-                  cached?.displayName ??
-                  device.name ??
-                  'Unknown Device Name';
+              switch (id) {
+                case SUB_ID_DEVICES:
+                  const device = gqlData.deviceStream;
+                  const deviceId = device.id;
+                  const cached = deviceCache[deviceId] || {};
+                  const deviceName =
+                    cached?.name ??
+                    cached?.displayName ??
+                    device.name ??
+                    'Unknown Device Name';
 
-                const deviceLabel = prettierLines([
-                  ['Device Name: ', 'white'],
-                  [`${deviceName}`, 'reddish'],
-                ]);
-                logMessage(`${deviceLabel}`, logStyles.bold);
-                logMessage(`  ${subContent}`);
-                break;
+                  const deviceLabel = prettierLines([
+                    ['Device Name: ', 'white'],
+                    [`${deviceName}`, 'reddish'],
+                  ]);
+                  logMessage(`${deviceLabel}`, logStyles.bold);
+                  logMessage(`  ${subContent}`);
+                  break;
 
-              case SUB_ID_PEOPLE:
-                const body = gqlData.peopleCountStream;
-                const json = prettierJson(body);
-                const { roomId, count } = body;
-                const roomName = roomCache[roomId] || roomId;
+                case SUB_ID_PEOPLE:
+                  const body = gqlData.peopleCountStream;
+                  const json = prettierJson(body);
+                  const { roomId, count } = body;
+                  const roomName = roomCache[roomId] || roomId;
 
-                const roomLabel = prettierLines([
-                  [` [${roomName}] People Count: `, 'white'],
-                  [count.toString(), 'reddish'],
-                ]);
-                logInfo(`${roomLabel}`, logStyles.bold);
-                logMessage(`${json}`);
-                break;
+                  const roomLabel = prettierLines([
+                    [` [${roomName}] People Count: `, 'white'],
+                    [count.toString(), 'reddish'],
+                  ]);
+                  logInfo(`${roomLabel}`, logStyles.bold);
+                  logMessage(`${json}`);
+                  break;
 
-              default:
-                logError(`Unknown subscription id: ${id}`);
+                default:
+                  logError(`Unknown subscription id: ${id}`);
+              }
+            } catch (err) {
+              logError(
+                `next frame error for sub ${id}: ${err.message ?? String(err)}`,
+                { err },
+              );
             }
             return startWaiting();
 
           case 'error':
-            const { errors } = payload;
+            logError(`Raw error payload for sub ${id}:`, { payload });
+            const errors = Array.isArray(payload?.errors) ? payload.errors : payload ? [payload] : [];
             for (const err of errors) {
               const code = err.extensions?.code ?? 'UNKNOWN';
               logError('GraphQL error', { code, id, err });
 
               if (code === 'UNAUTHENTICATED') {
                 logInfo(
-                  ' Token expired. Fetching a fresh one and attempting reconnect'
+                  ' Token expired. Fetching a fresh one and attempting reconnect',
                 );
                 setCloseHint('Token expired: reconnecting with fresh token');
                 return ws.terminate();
               }
             }
-            return startWaiting();
+            setCloseHint(`Subscription ${id} error: reconnecting`);
+            return ws.terminate();
 
           case 'complete':
-            logInfo(` Subscription ${id} complete`);
+            logInfo(
+              ` Subscription ${id} complete${payload ? `: ${JSON.stringify(payload)}` : ''}`,
+            );
+            if (ws.readyState === WebSocket.OPEN) {
+              logInfo(` Resubscribing to subscription ${id}`);
+              sendSubscriptions(id);
+            }
             return startWaiting();
 
           case 'ping':
@@ -371,7 +399,7 @@ export async function startWebSocket() {
         try {
           cleanup();
           logError(
-            `🪓 Disconnected: ${prettyClose(code, reason, lastCloseHint)}`
+            `🪓 Disconnected: ${prettyClose(code, reason, lastCloseHint)}`,
           );
           lastCloseHint = null;
 

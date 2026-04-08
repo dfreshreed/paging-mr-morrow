@@ -80,11 +80,24 @@ From the project root:
 
 3. Run it:
 
-   `npm start`
+   ```bash
+   npm start
+   ```
 
    **or**
 
-   `node pagingMrMorrow.js`
+   ```bash
+   node pagingMrMorrow.js
+   ```
+
+   By default both streams are enabled. Use flags to limit which streams run:
+
+   | Command                                     | Streams           |
+   | ------------------------------------------- | ----------------- |
+   | `node pagingMrMorrow.js`                    | Both (default)    |
+   | `node pagingMrMorrow.js --people`           | People count only |
+   | `node pagingMrMorrow.js --devices`          | Devices only      |
+   | `node pagingMrMorrow.js --people --devices` | Both (explicit)   |
 
 ### What You'll See
 
@@ -99,13 +112,13 @@ From the project root:
 - **Incoming** `deviceStream` message:
 
 <p align="center">
-    <img src="./assets/img/deviceStreamMessage2.png" alt="Example Device Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
+    <img src="./assets/img/device-offline.png" alt="Example Device Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
 </p>
 
 - **Incoming** `peopleCountStream` message:
 
 <p align="center">
-    <img src="./assets/img/peopleCountMessage.png" alt="Example People Count Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
+    <img src="./assets/img/people-count.png" alt="Example People Count Stream Data Message in CLI" style="max-width:800px; width:100%; height:auto;" />
 </p>
 
 ---
@@ -115,9 +128,10 @@ From the project root:
 1. Fetch an OAuth token from Lens Auth Endpoint (using Client Credentials)
 2. Uses pagination to fetch room and device IDs
 3. Opens a WebSocket and sends `connection_init` with the OAuth token
-4. Waits for `connection_ack`, **then** sends two `subscribe` frames:
+4. Waits for `connection_ack`, **then** sends `subscribe` frames for the enabled streams (controlled via CLI flags):
    - `peopleCountStream`
    - `deviceStream`
+   - If the server sends a `complete` for a subscription (server-side stream termination), the client resubscribes to that specific stream without dropping the WebSocket connection or triggering a full reconnect
 5. Maintains liveness:
    - Waits for AUTH/HTTP/WS to resolve before connection
    - Sends protocol `ping` every 15s, expects `pong` within 30s (or forces reconnect)
@@ -132,6 +146,7 @@ From the project root:
 
 - **UNAUTHENTICATED** (GraphQL error): terminate socket and reconnect
   - The next connect flow fetches a fresh token automatically
+- **Subscription errors** (e.g. `NO_ROUTE`, server infrastructure issues): terminate socket and reconnect with backoff
 - **Network/Server Disconnect**: exponential backoff + jitter
   - 1s → 2s → 3s - up to 30s
   - Backoff resets after a successful connection
