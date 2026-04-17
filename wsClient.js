@@ -217,9 +217,7 @@ export async function startWebSocket({ people = true, devices = true } = {}) {
             JSON.stringify({
               type: 'connection_init',
               payload: {
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                },
+                authorization: `Bearer ${accessToken}`,
               },
             }),
           );
@@ -346,7 +344,11 @@ export async function startWebSocket({ people = true, devices = true } = {}) {
 
           case 'error':
             logError(`Raw error payload for sub ${id}:`, { payload });
-            const errors = Array.isArray(payload?.errors) ? payload.errors : payload ? [payload] : [];
+            const errors = Array.isArray(payload?.errors)
+              ? payload.errors
+              : payload
+                ? [payload]
+                : [];
             for (const err of errors) {
               const code = err.extensions?.code ?? 'UNKNOWN';
               logError('GraphQL error', { code, id, err });
